@@ -82,6 +82,36 @@ Medido com o conjunto de 2.00 bpw no Strata 0.2.5. “Saída” é a velocidade 
 
 </details>
 
+<details>
+<summary><b>LFM2.5-24B-A2B · experimental, somente pelo código-fonte</b></summary>
+
+Chat de texto local com um motor HIP separado. Testado com **LFM2.5-24B-A2B-Q4_0.gguf** em
+**Linux, AMD Radeon RX 7900 XT (gfx1100)**. Todos os pesos do modelo ficam na GPU.
+O instalador desktop e o comando `strata launch` não incluem esse motor.
+
+Na cópia do código-fonte, com o toolkit HIP, CMake e as dependências de `apps/host` instalados:
+
+```sh
+npm --prefix apps/host run dev:lfm2 -- --model /path/to/LFM2.5-24B-A2B-Q4_0.gguf
+```
+
+Isso compila o motor e abre a interface web em `http://localhost:5199`, carregando o GGUF que você já tem, sem baixar
+pesos. O chat mantém o modelo carregado entre mensagens e oferece histórico, streaming, Parar e raciocínio ligado/desligado.
+O contexto padrão é de **32768 tokens**; use `--context N` para alterá-lo. Não há limite fixo de tokens de saída: a geração
+termina em EOS, ao pressionar Parar ou quando o contexto fica cheio.
+
+O [relatório de validação de 22/10/2026](src/lfm2/README.md) registra **93,23 tokens/s** na geração greedy e
+**92,52 tokens/s** com temperatura 0,7 e top-k 40, na RX 7900 XT com **Intel Xeon E5-2697 v3**.
+Os pesos ocuparam **13,57 GB de VRAM**, além dos buffers de contexto. São resultados registrados de conversas curtas,
+não medições repetidas após o último merge ou com o contexto de 32K cheio.
+
+**Limites:** somente texto; sem imagens, ferramentas/agentes, saída estruturada, Responses ou API Anthropic nesse motor.
+Outros modelos, GPUs, sistemas operacionais e backends não foram validados.
+
+[Compilação, detalhes da API, validação e limitações](src/lfm2/README.md).
+
+</details>
+
 <a id="the-other-sizes"></a>
 
 Não sabe o que cabe? [Escolha um modelo para o seu computador](docs/MODELS.md#pick-by-memory).

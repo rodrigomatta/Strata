@@ -86,6 +86,36 @@ Measured with the 2.00 bpw set on Strata 0.2.5 (Strix Halo: 0.2.7). Output is th
 
 </details>
 
+<details>
+<summary><b>LFM2.5-24B-A2B · experimental, source checkout only</b></summary>
+
+Local text chat through a separate HIP engine. Tested with **LFM2.5-24B-A2B-Q4_0.gguf** on
+**Linux, AMD Radeon RX 7900 XT (gfx1100)**. All model weights stay on the GPU.
+The desktop installer and `strata launch` do not include this engine.
+
+From a source checkout, with the HIP toolkit, CMake and the `apps/host` dependencies installed:
+
+```sh
+npm --prefix apps/host run dev:lfm2 -- --model /path/to/LFM2.5-24B-A2B-Q4_0.gguf
+```
+
+This builds the engine and opens the web UI at `http://localhost:5199`, loading your existing GGUF without downloading
+weights. The chat keeps the model loaded between messages and supports history, streaming, Stop and reasoning on/off.
+The default context is **32768 tokens**; use `--context N` to change it. There is no fixed output token limit: generation
+ends at EOS, Stop or the end of the context window.
+
+The [validation report dated 2026-10-22](src/lfm2/README.md) records **93.23 tokens/s** for greedy decode and
+**92.52 tokens/s** with temperature 0.7 and top-k 40, on the RX 7900 XT with an **Intel Xeon E5-2697 v3**.
+Weights occupied **13.57 GB of VRAM**, plus context buffers. These are recorded short-chat results, not measurements
+repeated after the latest merge or with a full 32K context.
+
+**Limits:** text only; no images, tools/agents, structured output, Responses or Anthropic API for this engine.
+Other models, GPUs, operating systems and backends have not been validated.
+
+[Build instructions, API details, validation and limitations](src/lfm2/README.md).
+
+</details>
+
 <a id="the-other-sizes"></a>
 
 Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-memory).
