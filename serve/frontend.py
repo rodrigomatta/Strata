@@ -269,8 +269,12 @@ VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", 
 # 0.1.44: `<tool_call>`, `<tool_response>` and `</tool_response>` are type 4 too (ids 248058, 248066, 248070), so a quoted
 # one handed the model the real call / tool-result marker in the same way (found by 47Hunter47 in #2026).  The template
 # writes the tool-result markers around a tool message itself; only the text inside a message is marked.
+# deepseek41: `｜DSML｜` is the tool-call markup's own token (id 128825, type 4, matched everywhere), so a user quoting a
+# DSML call handed the model a real markup token mid-prompt.  Marked the same way (a tag's <, name and > around it are
+# plain text already); an assistant message keeps its own, and the forced opening (tool_choice) is encoded directly,
+# never through here.
 TOOL_LITERAL_TAGS = {"</tool_call>": "\U000F0E07", "<tool_call>": "\U000F0E08", "<tool_response>": "\U000F0E09",
-                     "</tool_response>": "\U000F0E0A"}
+                     "</tool_response>": "\U000F0E0A", "｜DSML｜": "\U000F0E0B"}
 LITERAL_TAGS = {**THINK_TAGS, **VISION_TAGS, **TOOL_LITERAL_TAGS}
 THINK_MARKS = {v: k for k, v in LITERAL_TAGS.items()}
 CONTROL_MARK0 = 0xF0E10      # the control tokens' marks start here, clear of the two sets above

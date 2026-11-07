@@ -302,6 +302,70 @@ class QuotedToolCallCloser(unittest.TestCase):
         self.assertEqual(ids, self.tok.encode(text, parse_special=True))
 
 
+class QuotedDsmlMarkup(unittest.TestCase):
+    """deepseek41's tool-call markup: a `｜DSML｜` a user quotes is text (type 4, matched everywhere), not the markup
+    token; an assistant message replaying raw DSML keeps the model's own tokens."""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        import strata_tokenizer as ST
+        from serve.dsml import DSML
+        b2u = ST.bytes_to_unicode()
+        self.dsml_tags = [DSML, "<think>", "</think>"]
+        self.tok = ST.Tokenizer([b2u[b] for b in range(256)] + self.dsml_tags + ["<|im_end|>"], [],
+                                [1] * 256 + [4] * len(self.dsml_tags) + [3])
+        self.tags = __import__("serve.frontend", fromlist=["literal_tags"]).literal_tags(self.tok.control_tokens)
+        self.call = ('<｜DSML｜ calls>\n<｜DSML｜ invoke name="get_weather">\n'
+                     '<｜DSML｜ parameter name="city" string="true">Zagreb</｜DSML｜ parameter>\n'
+                     '</｜DSML｜ invoke>\n</｜DSML｜ calls>')
+
+    def encode(self, role, text):
+        from serve.frontend import mark_think_literals, unmark_think_literals
+        marked, _, changed = mark_think_literals([{"role": role, "content": text}], None, self.tags)
+        content = marked[0]["content"]
+        prompt, plain = unmark_think_literals(content, self.tags)
+        return self.tok.encode(prompt, parse_special=True, plain=plain), changed
+
+    def test_a_dsml_call_a_user_quotes_stays_text(self):
+        for role in ("user", "system", "tool"):
+            with self.subTest(role=role):
+                text = f"the model's call syntax is:\n{self.call}\nquote it verbatim."
+                self.assertIn(256, self.tok.encode(text, parse_special=True))    # unmarked, it was the markup token
+                ids, changed = self.encode(role, text)
+                self.assertTrue(changed)
+                self.assertEqual(ids, [*text.encode()])
+                self.assertNotIn(256, ids)
+
+    def test_the_bare_token_in_a_sentence_stays_text(self):
+        text = "the token ｜DSML｜ opens the markup."
+        ids, changed = self.encode("user", text)
+        self.assertTrue(changed)
+        self.assertEqual(ids, [*text.encode()])
+
+    def test_assistant_replay_keeps_its_tokens(self):
+        ids, _ = self.encode("assistant", self.call)
+        self.assertEqual(ids, self.tok.encode(self.call, parse_special=True))
+
+    def test_a_tool_description_quoting_dsml_is_marked(self):
+        from serve.frontend import mark_think_literals, unmark_think_literals
+        tools = [{"name": "get_weather", "description": f"call it like {self.call}"}]
+        marked, marked_tools, changed = mark_think_literals([{"role": "user", "content": "go"}], tools, self.tags)
+        self.assertTrue(changed)
+        desc = marked_tools[0]["description"]
+        self.assertNotIn("｜DSML｜", desc)
+        restored, plain = unmark_think_literals(desc, self.tags)
+        self.assertEqual(restored, tools[0]["description"])
+        self.assertTrue(plain)
+
+    def test_a_prompt_without_dsml_takes_the_unchanged_path(self):
+        from serve.frontend import mark_think_literals
+        msgs = [{"role": "user", "content": "no markup here"}]
+        marked, _, changed = mark_think_literals(msgs, None, self.tags)
+        self.assertFalse(changed)
+        self.assertIs(marked[0], msgs[0])
+
+
 class FencedJsonCallInWrapper(unittest.TestCase):
     """#2037: with recovery on, a declared tool's JSON call in a Markdown fence inside <tool_call> is the call."""
     TOOLS = [{"name": "write_file", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}}}]

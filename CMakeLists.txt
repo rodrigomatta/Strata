@@ -1128,6 +1128,51 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_executable(ds4_pick_rule_test tests/dsv41/pick_rule_test.cpp)
       target_include_directories(ds4_pick_rule_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
       target_compile_features(ds4_pick_rule_test PRIVATE cxx_std_17)
+      # the prompt chunk's host-aware plan (ds4_prefill_plan.hpp, the main engine's #2824 model): no GPU, no model
+      add_executable(ds4_prefill_plan_test tests/dsv41/prefill_plan_test.cpp)
+      target_include_directories(ds4_prefill_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+      target_compile_features(ds4_prefill_plan_test PRIVATE cxx_std_17)
+    endif()
+    # the dsv41 launch loops' sync guard (STRATA_DS4_SYNC_GUARD, OFF by default - a debug/test build option): the
+    # sync-capable runtime calls interposed at link time (ds4_sync_guard.cu, -Wl,--wrap - the loops' own code is not
+    # touched), a Window in the two launch loops (feed_windows, forward_chunks) telling the wrappers when they are
+    # inside one, STRATA_DS4_FORBID_SYNC=log|0|abort saying what a hit does.  OFF changes nothing: Window is an
+    # empty type and no symbol is wrapped.
+    option(STRATA_DS4_SYNC_GUARD "Debug: interpose the dsv41 launch loops' sync-capable GPU calls (link-time --wrap)" OFF)
+    if(STRATA_DS4_SYNC_GUARD)
+      target_sources(strata-dsv41 PRIVATE src/dsv41/ds4_sync_guard.cu)
+      target_compile_definitions(strata-dsv41 PRIVATE STRATA_DS4_SYNC_GUARD=1)
+      set(_ds4_sync_wrap_syms cudaMemcpy cudaMalloc cudaFree cudaHostAlloc cudaFreeHost cudaHostRegister
+                                 cudaStreamSynchronize cudaDeviceSynchronize cudaEventSynchronize cudaMemGetInfo)
+      if(STRATA_ENABLE_HIP)   # (the engine's cuda* names map to hip* on this backend: hip_compat/hip_extra - cudaHostAlloc is hipHostMalloc here)
+        set(_ds4_sync_wrap_syms hipMemcpy hipMalloc hipFree hipHostMalloc hipFreeHost hipHostRegister
+                                 hipStreamSynchronize hipDeviceSynchronize hipEventSynchronize hipMemGetInfo)
+      endif()
+      foreach(_s ${_ds4_sync_wrap_syms})
+        target_link_options(strata-dsv41 PRIVATE "SHELL:-Wl,--wrap=${_s}")
+      endforeach()
+      # the guard itself: the window logic without a GPU, the interposition with one, no model
+      if(STRATA_ENABLE_HIP)
+        set(_sg_lang HIP)
+      elseif(STRATA_ENABLE_CUDA)
+        set(_sg_lang CUDA)
+      else()
+        set(_sg_lang CXX)
+      endif()
+      set_source_files_properties(tests/dsv41/sync_guard_test.cpp PROPERTIES LANGUAGE ${_sg_lang})
+      add_executable(ds4_sync_guard_test tests/dsv41/sync_guard_test.cpp src/dsv41/ds4_sync_guard.cu)
+      target_include_directories(ds4_sync_guard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+      target_link_libraries(ds4_sync_guard_test PRIVATE ${_strata_gpu_runtime_target})
+      target_compile_definitions(ds4_sync_guard_test PRIVATE STRATA_DS4_SYNC_GUARD=1)
+      if(STRATA_ENABLE_HIP)
+        target_compile_options(ds4_sync_guard_test PRIVATE
+          "$<$<COMPILE_LANGUAGE:HIP,CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+      endif()
+      foreach(_s ${_ds4_sync_wrap_syms})
+        target_link_options(ds4_sync_guard_test PRIVATE "SHELL:-Wl,--wrap=${_s}")
+      endforeach()
     endif()
     if(STRATA_ENABLE_HIP)
       foreach(_t strata_dsv41_kernels strata-dsv41)
@@ -3063,4 +3108,10 @@ endif()
 option(STRATA_BUILD_SPLIT "Build strata-split: sFNX's split-every-layer engine, host-memory exchange (Linux, CUDA or HIP gfx1201, 2-4 cards)" OFF)
 if(STRATA_BUILD_SPLIT)
   add_subdirectory(src/split)
+endif()
+
+# Local, opt-in: LFM2-MoE engine (HIP, gfx1100 by default) from src/lfm2.  OFF leaves every other target as it was.
+option(STRATA_LFM2 "Local: LFM2-MoE engine (HIP gfx1100) from src/lfm2" OFF)
+if(STRATA_LFM2)
+  add_subdirectory(src/lfm2)
 endif()

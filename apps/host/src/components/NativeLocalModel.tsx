@@ -9,7 +9,7 @@ import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog'
 import { sizeGb } from '../lib/format';
 import { NativeProgress } from './NativeModels';
 
-interface Preview { path: string; preview: { model_dir?: string; plain_issues?: string[]; already_set_up?: { data_dir?: string | null; pack?: string | null } | null; file_count: number; total_bytes: number; file_set_status: string; issues: string[]; messages?: string[]; projectors?: { name: string; status: string; pinned: boolean; plain: string }[]; reads_pictures?: boolean; candidate_selection: { family: string; model: string } | null } }
+interface Preview { path: string; preview: { engine?:string; model_name?:string; context_max?:number; model_dir?: string; plain_issues?: string[]; already_set_up?: { data_dir?: string | null; pack?: string | null } | null; file_count: number; total_bytes: number; file_set_status: string; issues: string[]; messages?: string[]; projectors?: { name: string; status: string; pinned: boolean; plain: string }[]; reads_pictures?: boolean; candidate_selection: { family: string; model: string } | null } }
 
 /** The words for why a folder of GGUF files cannot be used: a sentence and what to do, the checker's own codes under Details. */
 function problem(issues: string[]): { message: string; next: string } {
@@ -61,7 +61,7 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
         setPending(true);
         setError('');
         try {
-            const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: checked.preview.model_dir ?? checked.path, ...(ownDataFolder ? { data_dir: ownDataFolder } : {}), context: native?.catalog?.recommendation?.context ?? 32768, vision: checked.preview.projectors?.some(p => p.status === 'ok' && p.pinned) && native?.visionReader ? 'yes' : 'no', kv: 'int8', loadAfter: true } });
+            const result = checked.preview.engine === 'lfm2' ? await nativeAction<NativeJob>('operations', {kind:'load-lfm2',args:{path:checked.path,context:Math.min(32768,checked.preview.context_max??32768)}}) : await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: checked.preview.model_dir ?? checked.path, ...(ownDataFolder ? { data_dir: ownDataFolder } : {}), context: native?.catalog?.recommendation?.context ?? 32768, vision: checked.preview.projectors?.some(p => p.status === 'ok' && p.pinned) && native?.visionReader ? 'yes' : 'no', kv: 'int8', loadAfter: true } });
             setJobId(result.id);
         }
         catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -77,8 +77,8 @@ export function NativeLocalModel({ onBack }: { onBack: () => void }) {
      <div className="native-settings-actions"><Btn icon="folder" disabled={pending || !!active} onClick={() => void check('')}>{tr("Choose folder")}</Btn><Btn disabled={pending || !typed.trim() || !!active} onClick={() => void check(typed)}>{tr(pending && !jobId ? 'Checking…' : 'Check files')}</Btn></div>
     </section>
     {tr(checked ? <section className="st-card native-choice">{tr(usable ? <>
-      <h2 className="h3">{tr(family ? family.title : 'Model found')}</h2>
-      <p><strong>{tr(version ? catalogVersionLabel(version) : selection?.model ?? '')}</strong> · {tr(selection?.model ?? '')}</p>
+      <h2 className="h3">{tr(checked.preview.engine === 'lfm2' ? 'LFM2-MoE' : family ? family.title : 'Model found')}</h2>
+      <p><strong>{tr(checked.preview.model_name ?? (version ? catalogVersionLabel(version) : selection?.model ?? ''))}</strong> · {tr(selection?.model ?? '')}</p>
       <p className="small muted">{tr("{0} files · {1}", [checked.preview.file_count, sizeGb(checked.preview.total_bytes / 1024 ** 3)])}</p>
       {tr(checked.preview.messages?.map(m => <p className="small muted" key={m}>{tr(m)}</p>))}
       <div className="native-model-actions"><Btn variant="primary" icon="models" disabled={pending || !!active} onClick={() => void prepare()}>{tr(pending ? 'Checking…' : 'Prepare and load')}</Btn></div>

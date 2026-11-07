@@ -257,7 +257,9 @@ function runtimeState(){
   return runtimeModels.state();
 }
 
-const startupModelId = process.env.STRATA_REAL_ENGINE === '1' ? (store.get().loaded ?? store.get().current) : null;
+if(process.env.STRATA_LFM2_MODEL)native.operation('load-lfm2',{path:process.env.STRATA_LFM2_MODEL,context:Number(process.env.LFM2_CTX??32768)});
+
+const startupModelId = !process.env.STRATA_LFM2_MODEL && process.env.STRATA_REAL_ENGINE === '1' ? (store.get().loaded ?? store.get().current) : null;
 if (startupModelId) {
   monitor.setModel(startupModelId);
   const lastId = startupModelId;
@@ -297,7 +299,7 @@ function setupState() {
   const s = store.get();
   return {
     complete: !!s.setup.complete,
-    dismissed: !!s.setup.dismissed,
+    dismissed: !!s.setup.dismissed || process.env.STRATA_LFM2_ONLY === '1',
     choices: s.setup.choices ?? {},
     step: s.setup.step ?? 1,
     flowVersion: 2,
@@ -657,7 +659,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
   if(native.hasLive()||nativeModelId){
     let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
-    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
+    try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{...(instance.engine==='lfm2'?{temperature:store.get().expert?.['sample.temp']??0,top_k:store.get().expert?.['sample.topK']??0,max_tokens:0}:{}),strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
   runtimeState();
   let instance;
@@ -2095,7 +2097,8 @@ async function api(req, res, path, method, url) {
     /* Agent turn, when the component is there and this request can use it. A client that disappears
        detaches from the turn (it keeps running in the Harness); Stop is its own request. */
     const chatId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
-    const agentSkip = process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
+    const lfm2Chat = !body.remoteModel && native.state().instances.some(i=>i.engine==='lfm2'&&i.id===(body.nativeModelId??native.state().defaultId));
+    const agentSkip = lfm2Chat ? 'LFM2 is running in text chat mode; tools are not enabled for this engine.' : process.env.STRATA_AGENT === 'off' ? 'The agent is turned off (STRATA_AGENT=off).'
       : body.agent === false || body.tools === false ? 'This chat runs without the agent.'
       : !chatId ? 'This request did not name a chat.'
       : !(body.remoteModel || native.hasLive()) ? 'The agent needs a loaded Strata model or an API model.'

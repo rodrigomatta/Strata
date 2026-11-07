@@ -26,6 +26,7 @@ import { applyImageModel, getState, useLifecycle, loadRuntimeModel, loadVariant,
 import type { ImageModelChoice, RuntimeModels, RuntimeModel } from '../lib/types';
 import { useNative, nativeSettled, subscribeNative } from '../lib/native';
 import { NativeModels } from '../components/NativeModels';
+import { Lfm2Models } from '../components/Lfm2Models';
 import { NativeLocalModel } from '../components/NativeLocalModel';
 import { parseLocation } from '../lib/router';
 type Issue = {
@@ -43,6 +44,8 @@ export function ModelRunScreen() {
         return <div className="main__body"><div className="wrap stack" role="status" aria-label={tr("Loading…")}><div className="skel" style={{ height: 20, width: '60%' }}/><div className="skel" style={{ height: 20, width: '80%' }}/><div className="skel" style={{ height: 20, width: '70%' }}/></div></div>;
     if (native && other)
         return <NativeLocalModel onBack={() => { setOther(false); setImportFirst(false); }}/>;
+    if (native && !other && native.lfm2?.only)
+        return <Lfm2Models />;
     if (native && !other)
         return <NativeModels onOtherModels={() => setOther(true)} onImport={() => { setImportFirst(true); setOther(true); }}/>;
     return <><LegacyModelRunScreen importFirst={importFirst} initialVariant={location.query.get('variant') ?? undefined}/>{tr(other ? <button className="st-btn native-return" onClick={() => setOther(false)}>{tr("Back")}</button> : null)}</>;

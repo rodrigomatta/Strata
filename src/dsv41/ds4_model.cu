@@ -18,6 +18,8 @@
 #include "ds4_model.hpp"
 #include "ds4_pick_rule.hpp"
 #include "ds4_experts_rule.hpp"
+#include "ds4_prefill_plan.hpp"
+#include "ds4_sync_guard.hpp"
 #include "ds4_engram_io.hpp"
 
 #include "ds4_gguf.cuh"
@@ -3520,7 +3522,9 @@ struct Model::Impl {
             }
             const size_t nh = host_allocs.size();
             std::string aerr;
-            while (chunk > 0 && !alloc_chunks(aerr)) {
+            // the chunk buffers' device and pinned memory back for a re-lay (the halving below, a re-plan below
+            // that): everything alloc_chunks took and nothing else
+            auto give_back = [&]() {
                 for (size_t di = 0; di < devs.size(); ++di) {
                     Dev& d = devs[di];
                     cudaSetDevice(d.id);
@@ -3540,6 +3544,9 @@ struct Model::Impl {
                     host_allocs.pop_back();
                 }
                 chunks.clear();
+            };
+            while (chunk > 0 && !alloc_chunks(aerr)) {
+                give_back();
                 if (slab_auto_grew_) {   // the automatic slab did not fit: the 0.2.6 slab first, the chunk only if that does not fit either
                     slab_auto_grew_ = false;
                     slab_force_base_ = true;
@@ -3564,6 +3571,96 @@ struct Model::Impl {
                 aerr.clear();
             }
             if (chunk > 0 && aerr.empty()) err.clear();
+            // STRATA_DS4_PREFILL_PLAN=1 (opt-in): the main engine's #2824 host-aware prompt plan (ds4_prefill_plan.hpp)
+            // for this engine's chunk.  The chunk above is what VRAM can buffer, while a prompt reads the CPU lane's
+            // file set once per chunk through it; when that set cannot stay in the RAM the OS caches, a smaller chunk
+            // reads less from the drive (2x RTX 3060 / 32 GB / IQ2_XS: 8192-token chunks read 28-45 GB for one 29K
+            // prompt, 4096 ~1 GB).  Advisory, exactly as in the main engine: --prefill-chunk N and DS4_CHUNK are the
+            // operator's and are never re-planned, the plan only ever shrinks the chunk (buffers for less always fit -
+            // re-laid here, before the experts take the rest), and without the env the chunk is exactly as chosen above.
+            if (file_experts && prompt_par && o.prefill_chunk < 0 && std::getenv("DS4_CHUNK") == nullptr) {
+                const char* plan_on = std::getenv("STRATA_DS4_PREFILL_PLAN");
+                if (plan_on != nullptr && std::atoi(plan_on) != 0) {
+                    double room = 0, all = 0;   // (the read-ahead's own estimate, re-measured below with the plan's chunk)
+                    for (Dev& d : devs) {
+                        cudaSetDevice(d.id);
+                        size_t fr = 0, tot = 0;
+                        CK(cudaMemGetInfo(&fr, &tot));
+                        room += std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
+                    }
+                    for (const Layer& l : L) all += (double) l.blob * l.n_exp;
+                    // the buffers' slope — the VRAM a smaller chunk hands the experts, which is what shrinks the set it
+                    // reads — measured by laying the buffers out once at the smallest candidate and diffing the engine's
+                    // own byte accounting (the fixed parts, the ring and the scores slabs, cancel in the difference)
+                    double freed_per_tok = 0.0;
+                    const int64_t probe = 512;
+                    if (chunk > probe) {
+                        const auto buf_bytes = [&]() {
+                            uint64_t s = 0;
+                            for (size_t di = 0; di < devs.size(); ++di) s += devs[di].scratch - sc0[di];
+                            return s;
+                        };
+                        const uint64_t b0 = buf_bytes();
+                        give_back();
+                        const int was = chunk;
+                        chunk = (int) probe;
+                        std::string rerr;
+                        if (alloc_chunks(rerr)) {
+                            const uint64_t bp = buf_bytes();
+                            give_back();
+                            chunk = was;
+                            if (!alloc_chunks(rerr)) {   // (the exact sizes that fit a moment ago)
+                                err = rerr;
+                                return false;
+                            }
+                            freed_per_tok = b0 > bp ? (double) (b0 - bp) / (double) (was - probe) : 0.0;
+                        } else {   // (cannot happen: strictly smaller buffers; the baseline goes back either way)
+                            give_back();
+                            chunk = was;
+                            if (!alloc_chunks(rerr)) {
+                                err = rerr;
+                                return false;
+                            }
+                        }
+                    }
+                    // layer-major reads the set once a run (lm_begin), and only the flow's single-device run takes it
+                    const bool lm_on = pk.gguf && devs.size() == 1 &&
+                                       !(std::getenv("DS4_LAYER_MAJOR") != nullptr &&
+                                         std::atoi(std::getenv("DS4_LAYER_MAJOR")) == 0) &&
+                                       (std::getenv("DS4_FLOW") == nullptr || std::atoi(std::getenv("DS4_FLOW")) != 0);
+                    namespace ds4pp = strata::ds4::prefill_plan;
+                    ds4pp::In pin;
+                    pin.tokens = std::max<int64_t>(chunk, std::min<int64_t>(std::max<int64_t>(o.max_context, 4096), 32768));
+                    pin.chunk = chunk;
+                    pin.experts_all = (uint64_t) all;
+                    pin.experts_room = (uint64_t) std::max(0.0, room);
+                    pin.freed_per_tok = freed_per_tok;
+                    pin.ram_tier = (uint64_t) (std::max(0.0, store_gb()) * 1073741824.0);
+                    pin.ram_avail = ram_avail();
+                    pin.ram_margin = kRamMargin;
+                    pin.one_device = lm_on;
+                    pin.layers = g.nl;
+                    pin.hand_bytes = (int64_t) chunk_hand_bytes();
+                    const ds4pp::Plan pl = ds4pp::plan_chunk(pin);
+                    std::fprintf(stderr, "%s\n", pl.line.c_str());
+                    if (pl.changed && pl.chunk > 0 && pl.chunk < chunk) {
+                        give_back();
+                        const int was = chunk;
+                        chunk = pl.chunk / 16 * 16;   // (the engine's own chunk granularity, from the load above)
+                        eg_cap = (size_t) chunk;
+                        std::string rerr;
+                        if (!alloc_chunks(rerr)) {   // (cannot happen: strictly smaller buffers than ones that fit)
+                            give_back();
+                            chunk = was;
+                            eg_cap = (size_t) was;
+                            if (!alloc_chunks(rerr)) {
+                                err = rerr;
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
         }
         // the CPU lane's experts read in place (decided above): how much of them the load reads ahead, from what VRAM
         // now leaves over
@@ -12522,7 +12619,9 @@ struct Model::Impl {
     double pm_k(int c) const { return pm.flow.factor_for_size_class(c); }
     // n tokens through windows of 16, the last one's logits_rows rows of logits
     bool feed_windows(const int* tokens, int n, int logits_rows, std::string& err) {
-        logits_all = false;
+        [[maybe_unused]] strata::ds4::sync_guard::Window sync_guard_win;   // (STRATA_DS4_SYNC_GUARD builds: the
+        logits_all = false;                                                //  launch loop's sync interposer)
+
         for (int a = 0; a < n; a += kWin) {
             const int T = std::min(kWin, n - a);
             if (!forward(tokens + a, T, a + T == n ? logits_rows : 0, err)) return false;
@@ -12903,6 +13002,7 @@ struct Model::Impl {
         if (n < 1) return true;
         flow_used.store(true);
         std::lock_guard<std::mutex> warm_lk(warm_mu);   // (the warm-up, if it is running, finishes first)
+        [[maybe_unused]] strata::ds4::sync_guard::Window sync_guard_win;
         if (pos + n > o.max_context) {
             err = "the context is full";
             return false;

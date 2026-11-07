@@ -6,6 +6,7 @@
   "description": "Strata \u2014 local AI, tuned to one model. Web shell + engine host.",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:lfm2": "node scripts/lfm2.mjs",
     "dev:web": "vite",
     "dev:host": "node server/index.mjs",
     "build": "vite build",
